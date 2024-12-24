@@ -1,0 +1,77 @@
+workflows:
+  react-native-ios:
+    name: React Native iOS
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    environment:
+      groups:
+        - creds
+      vars:
+        XCODE_WORKSPACE: "PharaohCrown.xcworkspace" # <----
+        XCODE_SCHEME: "PharaohCrown" # <----
+        BUNDLE_ID: "com.quest.pharaoh" # <----
+        APP_STORE_APP_ID: 6460821935 # <----
+        APP_STORE_CONNECT_KEY_ID: "Q6H66YD78D" # <----
+        APP_STORE_CONNECT_ISSUER_ID: "fc6c8a3e-0b7e-4040-8764-004e41d16ca7" # <----
+        node: latest
+        xcode: latest
+        cocoapods: default
+    triggering:
+      events:
+        - push
+        - tag
+        - pull_request
+      branch_patterns:
+        - pattern: develop
+          include: true
+          source: true
+    scripts:
+      - name: Install npm dependencies
+        script: npm install --force
+      - name: Install CocoaPods dependencies
+        script: cd ios && pod install
+      - name: Set up keychain for code signing
+        script: keychain initialize
+      - name: Fetch signing files
+        script: app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+      - name: Use system default keychain
+        script: keychain add-certificates
+      - name: Increment build number
+        script: |
+          cd $CM_BUILD_DIR/ios
+          LATEST_BUILD_NUMBER=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APP_ID" 2>/dev/null || echo 0)
+          if [[ "$LATEST_BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+            NEW_BUILD_NUMBER=$((LATEST_BUILD_NUMBER + 1))
+            echo "Setting new build number: $NEW_BUILD_NUMBER"
+          else
+            echo "No previous build number found or invalid build number. Starting with build number 1."
+            NEW_BUILD_NUMBER=1
+          fi
+          agvtool new-version -all $NEW_BUILD_NUMBER || { echo "Failed to set new build number"; exit 1; }
+      - name: Set up code signing settings in Xcode project
+        script: xcode-project use-profiles --warn-only
+      - name: Build IPA for distribution
+        script: xcode-project build-ipa --workspace "$CM_BUILD_DIR/ios/$XCODE_WORKSPACE" --scheme "$XCODE_SCHEME" --archive-flags="-destination 'generic/platform=iOS'"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+    publishing:
+      email:
+        recipients:
+          - carlosandrews254@gmail.com       # <----
+        notify:
+          success: true
+          failure: false
+      slack:
+        channel: '#builds'
+        notify_on_build_start: true
+        notify:
+          success: true
+          failure: false
+      app_store_connect:
+        api_key: "$APP_STORE_CONNECT_PRIVATE_KEY"
+        key_id: "$APP_STORE_CONNECT_KEY_ID"
+        issuer_id: "$APP_STORE_CONNECT_ISSUER_ID"
+        submit_to_testflight: true
